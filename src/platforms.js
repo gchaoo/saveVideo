@@ -4,11 +4,27 @@ const PLATFORM_RULES = [
   { id: 'xiaohongshu', pattern: /(^|\.)xiaohongshu\.com$|(^|\.)xhslink\.com$/i, label: '小红书' }
 ];
 
+export function normalizeVideoInput(rawInput) {
+  const value = String(rawInput || '').trim();
+
+  if (!value) {
+    return '';
+  }
+
+  const matchedUrl = value.match(/https?:\/\/[^\s"'<>]+/i);
+
+  if (!matchedUrl) {
+    return value;
+  }
+
+  return matchedUrl[0].replace(/[),.;!?]+$/g, '');
+}
+
 export function detectPlatform(rawUrl) {
   let parsed;
 
   try {
-    parsed = new URL(rawUrl);
+    parsed = new URL(normalizeVideoInput(rawUrl));
   } catch {
     return { id: 'invalid', label: '无效链接' };
   }

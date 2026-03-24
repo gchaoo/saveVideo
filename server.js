@@ -2,7 +2,7 @@ import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import { detectPlatform } from './src/platforms.js';
+import { detectPlatform, normalizeVideoInput } from './src/platforms.js';
 import { resolveVideo } from './src/resolve-service.js';
 
 const PORT = Number(process.env.PORT || 4173);
@@ -79,7 +79,7 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === 'POST' && requestUrl.pathname === '/api/resolve') {
       const body = await readJson(request);
-      const rawUrl = String(body.url || '').trim();
+      const rawUrl = normalizeVideoInput(body.url);
 
       if (!rawUrl) {
         sendJson(response, 400, { error: '请输入视频链接' });
