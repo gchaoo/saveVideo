@@ -8,7 +8,8 @@ import { Readable } from 'node:stream';
 
 import { detectPlatform } from './platforms.js';
 
-const MEDIA_DIR = path.resolve('.cache', 'media');
+export const WEB_MEDIA_DIR = path.resolve('.cache', 'media');
+export const DEFAULT_OUTPUT_DIR = '/Users/gch/Downloads';
 const CHROME_CANDIDATES = [
   process.env.CHROME_BIN,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -23,6 +24,7 @@ const DESKTOP_HEADERS = {
   accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8'
 };
+const DOUYIN_HEADLESS_VIRTUAL_TIME_BUDGETS_MS = [1000, 3000, 8000];
 
 function formatDuration(seconds) {
   if (!Number.isFinite(seconds) || seconds <= 0) {
@@ -58,8 +60,8 @@ function parseJsonLines(output) {
   return null;
 }
 
-async function findDownloadedFile(id) {
-  const files = await fs.readdir(MEDIA_DIR);
+async function findDownloadedFile(id, outputDir) {
+  const files = await fs.readdir(outputDir);
   const match = files.find((file) => file.startsWith(`${id}.`) && !file.endsWith('.part') && !file.endsWith('.info.json'));
 
   if (!match) {
@@ -133,6 +135,20 @@ function decodeHtmlAttribute(value) {
     .replace(/&#39;/g, '\'')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>');
+}
+
+function pickFirstNonEmpty(values) {
+  return values.find((value) => typeof value === 'string' && value.trim()) || '';
+}
+
+function inferExtFromUrl(mediaUrl) {
+  try {
+    const parsed = new URL(mediaUrl);
+    const extension = path.extname(parsed.pathname).slice(1).toLowerCase();
+    return extension || 'mp4';
+  } catch {
+    return 'mp4';
+  }
 }
 
 function stripDouyinTitleSuffix(title) {
@@ -353,45 +369,82 @@ export function extractDouyinRenderedMediaMetadata(html) {
   };
 }
 
+export function extractGenericMediaMetadata(html) {
+  const title =
+    pickFirstNonEmpty([
+      extractScriptBlock(html, /<meta[^>]+property="og:title"[^>]+content="([^"]+)"/i),
+      extractScriptBlock(html, /<meta[^>]+name="title"[^>]+content="([^"]+)"/i),
+      extractScriptBlock(html, /<title>([\s\S]*?)<\/title>/i)
+    ]) || '公开页面媒体';
+
+  const mediaCandidates = [
+    ...Array.from(html.matchAll(/<(?:video|audio)[^>]+src="([^"]+)"/gi), (match) => decodeHtmlAttribute(match[1])),
+    ...Array.from(html.matchAll(/<source[^>]+src="([^"]+)"/gi), (match) => decodeHtmlAttribute(match[1])),
+    ...Array.from(
+      html.matchAll(/https?:\/\/[^"'<>\\\s]+?\.(?:mp4|m3u8|mp3)(?:\?[^"'<>\\\s]*)?/gi),
+      (match) => decodeHtmlAttribute(match[0])
+    )
+  ].filter(Boolean);
+
+  const mediaUrl = mediaCandidates.find((candidate) => /^https?:\/\//i.test(candidate)) || '';
+
+  if (!mediaUrl) {
+    throw new Error('未找到公开页面中的可播放媒体地址');
+  }
+
+  return {
+    title: title.trim(),
+    duration: 0,
+    mediaUrl,
+    ext: inferExtFromUrl(mediaUrl)
+  };
+}
+
 async function dumpDomWithHeadlessChrome(url) {
   let lastError = null;
 
-  for (const chromeBinary of CHROME_CANDIDATES) {
-    try {
-      return await new Promise((resolve, reject) => {
-        const stdoutChunks = [];
-        const stderrChunks = [];
-        const child = spawn(
-          chromeBinary,
-          [
-            '--headless=new',
-            '--disable-gpu',
-            '--virtual-time-budget=8000',
-            '--dump-dom',
-            url
-          ],
-          { cwd: process.cwd() }
-        );
+  for (const virtualTimeBudgetMs of getHeadlessChromeVirtualTimeBudgets()) {
+    for (const chromeBinary of CHROME_CANDIDATES) {
+      try {
+        return await new Promise((resolve, reject) => {
+          const stdoutChunks = [];
+          const stderrChunks = [];
+          const child = spawn(chromeBinary, getHeadlessChromeArgs(url, virtualTimeBudgetMs), { cwd: process.cwd() });
 
-        child.stdout.on('data', (chunk) => stdoutChunks.push(chunk));
-        child.stderr.on('data', (chunk) => stderrChunks.push(chunk));
-        child.on('error', reject);
-        child.on('close', (code) => {
-          if (code === 0) {
-            resolve(Buffer.concat(stdoutChunks).toString('utf8'));
-            return;
-          }
+          child.stdout.on('data', (chunk) => stdoutChunks.push(chunk));
+          child.stderr.on('data', (chunk) => stderrChunks.push(chunk));
+          child.on('error', reject);
+          child.on('close', (code) => {
+            if (code === 0) {
+              resolve(Buffer.concat(stdoutChunks).toString('utf8'));
+              return;
+            }
 
-          const errorText = Buffer.concat(stderrChunks).toString('utf8').trim();
-          reject(new Error(errorText || `${chromeBinary} exited with code ${code}`));
+            const errorText = Buffer.concat(stderrChunks).toString('utf8').trim();
+            reject(new Error(errorText || `${chromeBinary} exited with code ${code}`));
+          });
         });
-      });
-    } catch (error) {
-      lastError = error;
+      } catch (error) {
+        lastError = error;
+      }
     }
   }
 
   throw lastError || new Error('未找到可用的 Chrome/Chromium');
+}
+
+export function getHeadlessChromeVirtualTimeBudgets() {
+  return [...DOUYIN_HEADLESS_VIRTUAL_TIME_BUDGETS_MS];
+}
+
+export function getHeadlessChromeArgs(url, virtualTimeBudgetMs = DOUYIN_HEADLESS_VIRTUAL_TIME_BUDGETS_MS[0]) {
+  return [
+    '--headless=new',
+    '--disable-gpu',
+    `--virtual-time-budget=${virtualTimeBudgetMs}`,
+    '--dump-dom',
+    url
+  ];
 }
 
 async function downloadRemoteFile(url, outputPath, headers = {}) {
@@ -407,7 +460,7 @@ async function downloadRemoteFile(url, outputPath, headers = {}) {
   await pipeline(Readable.fromWeb(response.body), createWriteStream(outputPath));
 }
 
-async function resolveDouyinVideo(rawUrl) {
+async function resolveDouyinVideo(rawUrl, outputDir) {
   const pageResponse = await fetch(rawUrl, {
     headers: DESKTOP_HEADERS,
     redirect: 'follow'
@@ -429,25 +482,67 @@ async function resolveDouyinVideo(rawUrl) {
 
   const requestId = randomUUID();
   const outputFile = `${requestId}.mp4`;
-  const outputPath = path.join(MEDIA_DIR, outputFile);
+  const outputPath = path.join(outputDir, outputFile);
 
   await downloadRemoteFile(metadata.videoUrl, outputPath, {
     'user-agent': DESKTOP_HEADERS['user-agent'],
     referer: pageResponse.url
   });
 
-  return buildResolveResult({
+  return buildResolvedMediaResult({
     rawUrl: pageResponse.url || rawUrl,
     info: {
       title: metadata.title,
       duration: metadata.duration,
       ext: 'mp4'
     },
-    outputFile
+    outputFile,
+    outputDir
   });
 }
 
-export function buildResolveResult({ rawUrl, info, outputFile }) {
+async function resolveGenericMedia(rawUrl, outputDir) {
+  const pageResponse = await fetch(rawUrl, {
+    headers: DESKTOP_HEADERS,
+    redirect: 'follow'
+  });
+
+  if (!pageResponse.ok) {
+    throw new Error(`公开页面访问失败: ${pageResponse.status} ${pageResponse.statusText}`);
+  }
+
+  const pageHtml = await pageResponse.text();
+  let metadata;
+
+  try {
+    metadata = extractGenericMediaMetadata(pageHtml);
+  } catch {
+    const renderedHtml = await dumpDomWithHeadlessChrome(pageResponse.url || rawUrl);
+    metadata = extractGenericMediaMetadata(renderedHtml);
+  }
+
+  const requestId = randomUUID();
+  const outputFile = `${requestId}.${metadata.ext}`;
+  const outputPath = path.join(outputDir, outputFile);
+
+  await downloadRemoteFile(metadata.mediaUrl, outputPath, {
+    'user-agent': DESKTOP_HEADERS['user-agent'],
+    referer: pageResponse.url || rawUrl
+  });
+
+  return buildResolvedMediaResult({
+    rawUrl: pageResponse.url || rawUrl,
+    info: {
+      title: metadata.title,
+      duration: metadata.duration,
+      ext: metadata.ext
+    },
+    outputFile,
+    outputDir
+  });
+}
+
+export function buildResolvedMediaResult({ rawUrl, info, outputFile, outputDir }) {
   const platform = detectPlatform(rawUrl);
 
   return {
@@ -456,37 +551,36 @@ export function buildResolveResult({ rawUrl, info, outputFile }) {
     type: inferType(outputFile, info),
     expiresIn: '24h 后失效',
     source: buildSourceLabel(platform),
-    previewUrl: `/media/${encodeURIComponent(outputFile)}`,
-    downloadUrl: `/media/${encodeURIComponent(outputFile)}?download=1`,
-    platform: platform.id
+    platform: platform.id,
+    fileName: outputFile,
+    localFilePath: path.join(outputDir, outputFile)
   };
 }
 
-export async function resolveVideo(rawUrl) {
-  await fs.mkdir(MEDIA_DIR, { recursive: true });
+export function buildHttpResolveResult(media) {
+  return {
+    ...media,
+    previewUrl: `/media/${encodeURIComponent(media.fileName)}`,
+    downloadUrl: `/media/${encodeURIComponent(media.fileName)}?download=1`
+  };
+}
 
-  if (detectPlatform(rawUrl).id === 'douyin') {
-    return resolveDouyinVideo(rawUrl);
+export async function resolveVideo(rawUrl, { outputDir = DEFAULT_OUTPUT_DIR } = {}) {
+  await fs.mkdir(outputDir, { recursive: true });
+
+  const platform = detectPlatform(rawUrl);
+
+  if (platform.id === 'douyin') {
+    return resolveDouyinVideo(rawUrl, outputDir);
+  }
+
+  if (platform.id === 'generic') {
+    return resolveGenericMedia(rawUrl, outputDir);
   }
 
   const requestId = randomUUID();
-  const outputTemplate = path.join(MEDIA_DIR, `${requestId}.%(ext)s`);
-
-  const args = [
-    '-m',
-    'yt_dlp',
-    '--no-playlist',
-    '--no-warnings',
-    '--print-json',
-    '--no-progress',
-    '--newline',
-    '--restrict-filenames',
-    '--merge-output-format',
-    'mp4',
-    '-o',
-    outputTemplate,
-    rawUrl
-  ];
+  const outputTemplate = path.join(outputDir, `${requestId}.%(ext)s`);
+  const args = buildYtDlpArgs({ rawUrl, outputTemplate, platform });
 
   const stdoutChunks = [];
   const stderrChunks = [];
@@ -513,11 +607,36 @@ export async function resolveVideo(rawUrl) {
     throw new Error('解析成功，但未返回媒体信息');
   }
 
-  const outputFile = await findDownloadedFile(requestId);
+  const outputFile = await findDownloadedFile(requestId, outputDir);
 
-  return buildResolveResult({
+  return buildResolvedMediaResult({
     rawUrl,
     info,
-    outputFile
+    outputFile,
+    outputDir
   });
+}
+
+export function buildYtDlpArgs({ rawUrl, outputTemplate, platform = detectPlatform(rawUrl) }) {
+  const args = [
+    '-m',
+    'yt_dlp',
+    '--no-playlist',
+    '--no-warnings',
+    '--print-json',
+    '--no-progress',
+    '--newline',
+    '--restrict-filenames',
+    '--merge-output-format',
+    'mp4'
+  ];
+
+  if (platform.id === 'bilibili') {
+    // 优先拿系统和浏览器更容易直接预览的 H.264/AAC 组合，避免落到 AV1 兼容性坑里。
+    args.push('-S', 'vcodec:h264,acodec:aac');
+  }
+
+  args.push('-o', outputTemplate, rawUrl);
+
+  return args;
 }

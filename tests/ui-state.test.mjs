@@ -127,3 +127,24 @@ test('result section render keeps preview on the left and action panel on the ri
   assert.match(markup, /复制下载链接/);
   assert.match(markup, /重新解析/);
 });
+
+test('result section renders audio preview for audio files from public pages', () => {
+  const view = createViewModel({
+    status: 'success',
+    inputValue: 'https://www.qianwen.com/efficiency/doc/transcripts/demo',
+    media: {
+      title: 'meeting-record.mp3',
+      duration: '56:08',
+      type: 'MP3',
+      expiresIn: '24h 后失效',
+      source: '公开网页视频解析结果',
+      previewUrl: '/media/meeting-record.mp3',
+      downloadUrl: '/media/meeting-record.mp3?download=1'
+    }
+  });
+
+  const markup = renderResultSection(view);
+
+  assert.match(markup, /class="preview-audio"/);
+  assert.match(markup, /<audio[\s\S]*src="\/media\/meeting-record\.mp3"/);
+});

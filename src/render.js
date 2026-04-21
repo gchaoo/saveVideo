@@ -9,6 +9,21 @@ function escapeHtml(value) {
 
 function renderResultPreview(view) {
   if (view.result.showPlayer) {
+    const isAudio = /^(MP3|M4A|AAC|WAV|OGG)$/i.test(view.result.meta.type);
+
+    if (isAudio) {
+      return `
+        <div class="preview-panel is-player">
+          <audio
+            class="preview-audio"
+            controls
+            preload="metadata"
+            src="${escapeHtml(view.result.meta.previewUrl)}"
+          ></audio>
+        </div>
+      `;
+    }
+
     return `
       <div class="preview-panel is-player">
         <video

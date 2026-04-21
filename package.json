@@ -3,7 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "savevideo": "./cli.js"
+  },
   "scripts": {
+    "cli": "node cli.js",
     "test": "node --test",
     "start": "node server.js"
   }

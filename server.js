@@ -3,11 +3,11 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { detectPlatform, normalizeVideoInput } from './src/platforms.js';
-import { resolveVideo } from './src/resolve-service.js';
+import { buildHttpResolveResult, resolveVideo, WEB_MEDIA_DIR } from './src/resolve-service.js';
 
 const PORT = Number(process.env.PORT || 4173);
 const ROOT = process.cwd();
-const MEDIA_DIR = path.resolve('.cache', 'media');
+const MEDIA_DIR = WEB_MEDIA_DIR;
 
 const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
@@ -15,8 +15,12 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon',
   '.js': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.aac': 'audio/aac',
+  '.m4a': 'audio/mp4',
+  '.mp3': 'audio/mpeg',
   '.mp4': 'video/mp4',
   '.m3u8': 'application/vnd.apple.mpegurl',
+  '.ogg': 'audio/ogg',
   '.svg': 'image/svg+xml; charset=utf-8'
 };
 
@@ -93,8 +97,8 @@ const server = http.createServer(async (request, response) => {
         return;
       }
 
-      const media = await resolveVideo(rawUrl);
-      sendJson(response, 200, media);
+      const media = await resolveVideo(rawUrl, { outputDir: MEDIA_DIR });
+      sendJson(response, 200, buildHttpResolveResult(media));
       return;
     }
 

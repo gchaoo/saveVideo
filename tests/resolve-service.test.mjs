@@ -2,45 +2,70 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  buildResolveResult,
+  buildHttpResolveResult,
+  buildResolvedMediaResult,
+  buildYtDlpArgs,
+  extractGenericMediaMetadata,
   extractDouyinMediaMetadata,
   extractDouyinRenderedMediaMetadata,
+  getHeadlessChromeArgs,
+  getHeadlessChromeVirtualTimeBudgets,
   normalizeDouyinVideoUrl
 } from '../src/resolve-service.js';
 
-test('buildResolveResult formats bilibili media response for local playback', () => {
-  const result = buildResolveResult({
+test('buildResolvedMediaResult formats bilibili media response for shared core usage', () => {
+  const result = buildResolvedMediaResult({
     rawUrl: 'https://www.bilibili.com/video/BV1xx411c7mD',
     info: {
       title: 'Bilibili Test Video',
       duration: 92.4,
       ext: 'mp4'
     },
-    outputFile: 'abc123.mp4'
+    outputFile: 'abc123.mp4',
+    outputDir: '/Users/gch/Downloads'
   });
 
   assert.equal(result.title, 'Bilibili Test Video');
   assert.equal(result.duration, '01:32');
   assert.equal(result.type, 'MP4');
   assert.equal(result.source, 'Bilibili 解析结果');
-  assert.equal(result.previewUrl, '/media/abc123.mp4');
-  assert.equal(result.downloadUrl, '/media/abc123.mp4?download=1');
   assert.equal(result.platform, 'bilibili');
+  assert.equal(result.fileName, 'abc123.mp4');
+  assert.equal(result.localFilePath, '/Users/gch/Downloads/abc123.mp4');
 });
 
-test('buildResolveResult formats direct video links as direct source', () => {
-  const result = buildResolveResult({
+test('buildHttpResolveResult adds preview and download urls for web usage', () => {
+  const result = buildHttpResolveResult({
+    title: 'Bilibili Test Video',
+    duration: '01:32',
+    type: 'MP4',
+    expiresIn: '24h 后失效',
+    source: 'Bilibili 解析结果',
+    platform: 'bilibili',
+    fileName: 'abc123.mp4',
+    localFilePath: '/Users/gch/worlspace/saveVideo/.cache/media/abc123.mp4'
+  });
+
+  assert.equal(result.previewUrl, '/media/abc123.mp4');
+  assert.equal(result.downloadUrl, '/media/abc123.mp4?download=1');
+  assert.equal(result.localFilePath, '/Users/gch/worlspace/saveVideo/.cache/media/abc123.mp4');
+});
+
+test('buildResolvedMediaResult formats direct video links as direct source', () => {
+  const result = buildResolvedMediaResult({
     rawUrl: 'https://cdn.example.com/video.mp4',
     info: {
       title: 'Direct Source',
       duration: 10,
       ext: 'mp4'
     },
-    outputFile: 'direct-file.mp4'
+    outputFile: 'direct-file.mp4',
+    outputDir: '/Users/gch/Downloads'
   });
 
   assert.equal(result.source, '公开网页视频直链');
   assert.equal(result.platform, 'direct');
+  assert.equal(result.localFilePath, '/Users/gch/Downloads/direct-file.mp4');
 });
 
 test('extractDouyinMediaMetadata reads RENDER_DATA payload and builds a playable url', () => {
@@ -141,4 +166,65 @@ test('extractDouyinRenderedMediaMetadata reads title and prefers aweme play sour
     result.videoUrl,
     'https://www.douyin.com/aweme/v1/play/?video_id=v0200fg10000d6ue1f7og65o45cdo790&aid=6383&__vid=7619212789407583530'
   );
+});
+
+test('extractGenericMediaMetadata reads audio source from a public transcript page', () => {
+  const result = extractGenericMediaMetadata(`
+    <html>
+      <head>
+        <meta property="og:title" content="千问实时记录">
+      </head>
+      <body>
+        <audio src="https://cdn.example.com/media/session.mp3?token=abc"></audio>
+      </body>
+    </html>
+  `);
+
+  assert.deepEqual(result, {
+    title: '千问实时记录',
+    duration: 0,
+    mediaUrl: 'https://cdn.example.com/media/session.mp3?token=abc',
+    ext: 'mp3'
+  });
+});
+
+test('buildYtDlpArgs prefers broadly compatible bilibili formats', () => {
+  const args = buildYtDlpArgs({
+    rawUrl: 'https://www.bilibili.com/video/BV1e8wDzQE7T',
+    outputTemplate: '/tmp/demo.%(ext)s'
+  });
+
+  assert.deepEqual(args, [
+    '-m',
+    'yt_dlp',
+    '--no-playlist',
+    '--no-warnings',
+    '--print-json',
+    '--no-progress',
+    '--newline',
+    '--restrict-filenames',
+    '--merge-output-format',
+    'mp4',
+    '-S',
+    'vcodec:h264,acodec:aac',
+    '-o',
+    '/tmp/demo.%(ext)s',
+    'https://www.bilibili.com/video/BV1e8wDzQE7T'
+  ]);
+});
+
+test('getHeadlessChromeVirtualTimeBudgets retries with broader budgets after the fast path', () => {
+  assert.deepEqual(getHeadlessChromeVirtualTimeBudgets(), [1000, 3000, 8000]);
+});
+
+test('getHeadlessChromeArgs builds fallback args with an explicit render budget', () => {
+  const args = getHeadlessChromeArgs('https://www.douyin.com/video/7619212789407583530', 3000);
+
+  assert.deepEqual(args, [
+    '--headless=new',
+    '--disable-gpu',
+    '--virtual-time-budget=3000',
+    '--dump-dom',
+    'https://www.douyin.com/video/7619212789407583530'
+  ]);
 });
